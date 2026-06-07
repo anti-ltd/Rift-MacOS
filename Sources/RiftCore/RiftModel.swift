@@ -10,8 +10,6 @@ public final class RiftModel {
     public init() {}
 
     public func start() {
-        if session.hasToken {
-            Task { await session.connect() }
-        }
+        if session.hasToken { session.connect() }
     }
 }

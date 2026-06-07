@@ -18,15 +18,20 @@ public struct Guild: Identifiable, Hashable, Sendable {
 
 public struct Channel: Identifiable, Hashable, Sendable {
     public enum Kind: String, Sendable {
-        case text, voice, announcement, forum, stage
+        case text, voice, announcement, forum, stage, category
+        case publicThread, privateThread, announcementThread
 
         public var symbol: String {
             switch self {
-            case .text:         return "number"
-            case .voice:        return "speaker.wave.2"
-            case .announcement: return "megaphone"
-            case .forum:        return "list.bullet.rectangle"
-            case .stage:        return "person.wave.2"
+            case .text:               return "number"
+            case .voice:              return "speaker.wave.2"
+            case .announcement:       return "megaphone"
+            case .forum:              return "list.bullet.rectangle"
+            case .stage:              return "person.wave.2"
+            case .category:           return "folder"
+            case .publicThread:       return "text.bubble"
+            case .privateThread:      return "lock"
+            case .announcementThread: return "text.bubble"
             }
         }
     }
@@ -36,13 +41,21 @@ public struct Channel: Identifiable, Hashable, Sendable {
     public var kind: Kind
     public var position: Int
     public var unreadCount: Int
+    public var parentID: String?
 
-    public init(id: String, name: String, kind: Kind = .text, position: Int = 0, unreadCount: Int = 0) {
+    public var isCategory: Bool { kind == .category }
+    public var isThread: Bool {
+        kind == .publicThread || kind == .privateThread || kind == .announcementThread
+    }
+
+    public init(id: String, name: String, kind: Kind = .text, position: Int = 0,
+                unreadCount: Int = 0, parentID: String? = nil) {
         self.id = id
         self.name = name
         self.kind = kind
         self.position = position
         self.unreadCount = unreadCount
+        self.parentID = parentID
     }
 }
 

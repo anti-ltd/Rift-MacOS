@@ -66,6 +66,8 @@ private struct SidebarColumn: View {
 
             if let guild = model.selectedGuild {
                 ChannelListView(guild: guild, selected: $model.selectedChannel)
+            } else if model.session.state.isConnected && !model.session.directMessages.isEmpty {
+                dmList
             } else if model.session.state.isConnected {
                 ContentUnavailableView("No server selected", systemImage: "server.rack")
                     .frame(maxHeight: .infinity)
@@ -79,6 +81,18 @@ private struct SidebarColumn: View {
                 connectionIndicator
             }
         }
+    }
+
+    private var dmList: some View {
+        List(selection: $model.selectedChannel) {
+            Section("Direct Messages") {
+                ForEach(model.session.directMessages) { dm in
+                    Label(dm.name, systemImage: "bubble.left")
+                        .tag(dm)
+                }
+            }
+        }
+        .listStyle(.sidebar)
     }
 
     @ViewBuilder
@@ -184,27 +198,66 @@ struct ChannelListView: View {
     let guild: Guild
     @Binding var selected: Channel?
 
-    private var textChannels: [Channel] { guild.channels.filter { $0.kind == .text || $0.kind == .announcement }.sorted { $0.position < $1.position } }
-    private var voiceChannels: [Channel] { guild.channels.filter { $0.kind == .voice || $0.kind == .stage }.sorted { $0.position < $1.position } }
+    private var categories: [Channel] {
+        guild.channels.filter(\.isCategory).sorted { $0.position < $1.position }
+    }
+
+    private func channels(parentID: String?) -> [Channel] {
+        guild.channels
+            .filter { !$0.isCategory && !$0.isThread && $0.parentID == parentID }
+            .sorted { $0.position < $1.position }
+    }
+
+    private func threads(parentID: String) -> [Channel] {
+        guild.channels
+            .filter { $0.isThread && $0.parentID == parentID }
+            .sorted { $0.position < $1.position }
+    }
 
     var body: some View {
         List(selection: $selected) {
-            if !textChannels.isEmpty {
-                Section("Text Channels") {
-                    ForEach(textChannels) { channel in
-                        ChannelRow(channel: channel).tag(channel)
-                    }
+            let uncategorized = channels(parentID: nil)
+            if !uncategorized.isEmpty {
+                Section {
+                    ForEach(uncategorized) { ch in channelRow(ch) }
                 }
             }
-            if !voiceChannels.isEmpty {
-                Section("Voice Channels") {
-                    ForEach(voiceChannels) { channel in
-                        ChannelRow(channel: channel).tag(channel)
+            ForEach(categories) { cat in
+                Section(cat.name.uppercased()) {
+                    ForEach(channels(parentID: cat.id)) { ch in
+                        channelRow(ch)
+                        ForEach(threads(parentID: ch.id)) { thread in
+                            threadRow(thread)
+                        }
                     }
                 }
             }
         }
         .listStyle(.sidebar)
+    }
+
+    @ViewBuilder
+    private func channelRow(_ channel: Channel) -> some View {
+        ChannelRow(channel: channel).tag(channel)
+    }
+
+    @ViewBuilder
+    private func threadRow(_ thread: Channel) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: "arrow.turn.down.right")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .padding(.leading, 14)
+            Image(systemName: thread.kind.symbol)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 14)
+            Text(thread.name)
+                .font(.callout)
+                .lineLimit(1)
+            Spacer()
+        }
+        .tag(thread)
     }
 }
 
@@ -236,21 +289,36 @@ private struct ChannelRow: View {
 struct MessagePaneView: View {
     let channel: Channel
     @Bindable var session: DiscordSession
-    @State private var messages: [Message] = []
+    @State private var history: [Message] = []
     @State private var draft = ""
+    @State private var loadError: String?
+    @State private var sending = false
+
+    // Combine fetched history with live gateway messages, deduplicating by id
+    private var allMessages: [Message] {
+        let live = session.liveMessages[channel.id] ?? []
+        let historyIDs = Set(history.map(\.id))
+        return history + live.filter { !historyIDs.contains($0.id) }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            if messages.isEmpty {
+            if allMessages.isEmpty {
                 emptyChannelView
             } else {
                 messageList
             }
+            if let loadError {
+                Text(loadError)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 4)
+            }
             Divider()
             inputBar
         }
-        .onAppear { loadMessages() }
-        .onChange(of: channel.id) { loadMessages() }
+        .task(id: channel.id) { await loadMessages() }
     }
 
     @ViewBuilder
@@ -267,15 +335,15 @@ struct MessagePaneView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
-                    ForEach(messages) { message in
+                    ForEach(allMessages) { message in
                         MessageRow(message: message)
                     }
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
             }
-            .onChange(of: messages.count) {
-                if let last = messages.last {
+            .onChange(of: allMessages.count) {
+                if let last = allMessages.last {
                     proxy.scrollTo(last.id, anchor: .bottom)
                 }
             }
@@ -290,37 +358,46 @@ struct MessagePaneView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
-                .onSubmit {
-                    sendMessage()
-                }
+                .onSubmit { Task { await sendMessage() } }
+                .disabled(sending)
 
             if !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Button {
-                    sendMessage()
-                } label: {
-                    Image(systemName: "arrow.up.circle.fill")
+                Button { Task { await sendMessage() } } label: {
+                    Image(systemName: sending ? "ellipsis.circle" : "arrow.up.circle.fill")
                         .font(.title2)
                         .foregroundStyle(Color.accentColor)
                 }
                 .buttonStyle(.plain)
                 .keyboardShortcut(.return, modifiers: .command)
+                .disabled(sending)
             }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
     }
 
-    private func loadMessages() {
-        // TODO: fetch channel message history from Discord REST API
-        // GET /channels/{channel.id}/messages
-        messages = []
+    private func loadMessages() async {
+        history = []
+        loadError = nil
+        do {
+            history = try await DiscordREST.fetchMessages(channelID: channel.id, token: session.token)
+        } catch {
+            loadError = "Couldn't load messages: \(error.localizedDescription)"
+        }
     }
 
-    private func sendMessage() {
+    private func sendMessage() async {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         draft = ""
-        // TODO: POST /channels/{channel.id}/messages via Discord REST API
+        sending = true
+        defer { sending = false }
+        do {
+            try await DiscordREST.sendMessage(channelID: channel.id, content: text, token: session.token)
+        } catch {
+            draft = text // restore on failure
+            loadError = "Send failed: \(error.localizedDescription)"
+        }
     }
 }
 

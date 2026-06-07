@@ -1,8 +1,5 @@
 import Foundation
 
-// Manages auth state, the Discord Gateway WebSocket connection, and REST calls.
-// v0.1 stub — wire in URLSessionWebSocketTask for the gateway and URLSession
-// for REST once models are solid.
 @MainActor
 @Observable
 public final class DiscordSession {
@@ -21,9 +18,13 @@ public final class DiscordSession {
 
     public var state: State = .disconnected
     public var guilds: [Guild] = []
+    public var directMessages: [Channel] = []
+    // Live messages per channel, appended on MESSAGE_CREATE gateway events
+    public var liveMessages: [String: [Message]] = [:]
 
-    // Token stored in UserDefaults for v0.1. Migrate to Keychain for production:
-    // use Security framework SecItemAdd/SecItemCopyMatching with kSecClassGenericPassword.
+    private var gateway: GatewayClient?
+
+    // Token stored in UserDefaults for v0.1. Migrate to Keychain for production.
     public var token: String {
         get { UserDefaults.standard.string(forKey: "rift.token") ?? "" }
         set { UserDefaults.standard.set(newValue.isEmpty ? nil : newValue, forKey: "rift.token") }
@@ -31,22 +32,46 @@ public final class DiscordSession {
 
     public var hasToken: Bool { !token.isEmpty }
 
-    public func connect() async {
+    public func connect() {
         guard hasToken else { return }
+        gateway?.disconnect()
         state = .connecting
+        guilds = []
+        directMessages = []
+        liveMessages = [:]
 
-        // TODO: open wss://gateway.discord.gg/?v=10&encoding=json
-        // TODO: handle Hello (op 10) → send Identify (op 2) with token
-        // TODO: on READY event → set state = .connected(username:), populate guilds
-
-        // Stub: surface an actionable error so the UI shows something useful
-        try? await Task.sleep(nanoseconds: 600_000_000)
-        state = .error("Gateway not implemented yet.")
+        let client = GatewayClient()
+        client.onEvent = { [weak self] event in self?.handle(event) }
+        gateway = client
+        client.connect(token: token)
     }
 
     public func disconnect() {
-        // TODO: send Close frame on the WebSocket
+        gateway?.disconnect()
+        gateway = nil
         state = .disconnected
         guilds = []
+        directMessages = []
+        liveMessages = [:]
+    }
+
+    private func handle(_ event: GatewayEvent) {
+        switch event {
+        case .ready(let username, let initial, let dms):
+            state = .connected(username: username)
+            guilds = initial.sorted { $0.name < $1.name }
+            directMessages = dms.sorted { $0.name < $1.name }
+        case .guildCreate(let guild):
+            if !guilds.contains(where: { $0.id == guild.id }) {
+                guilds.append(guild)
+                guilds.sort { $0.name < $1.name }
+            }
+        case .messageCreate(let channelID, let message):
+            liveMessages[channelID, default: []].append(message)
+        case .error(let msg):
+            state = .error(msg)
+        case .disconnected:
+            state = .disconnected
+        }
     }
 }

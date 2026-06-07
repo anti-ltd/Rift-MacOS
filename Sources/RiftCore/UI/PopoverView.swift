@@ -69,10 +69,8 @@ struct AccountTab: View {
                         .buttonStyle(.borderless)
                         .foregroundStyle(.red)
                 } else if session.hasToken {
-                    Button("Reconnect") {
-                        Task { await session.connect() }
-                    }
-                    .buttonStyle(.borderless)
+                    Button("Reconnect") { session.connect() }
+                        .buttonStyle(.borderless)
                 }
             }
             .padding(.vertical, UX.rowVPadding)
@@ -115,7 +113,7 @@ struct AccountTab: View {
                         session.token = tokenDraft
                         tokenDraft = ""
                         showToken = false
-                        Task { await session.connect() }
+                        session.connect()
                     }
                     .disabled(tokenDraft.trimmingCharacters(in: .whitespaces).isEmpty)
                     .buttonStyle(.borderedProminent)
