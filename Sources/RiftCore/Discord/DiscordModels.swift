@@ -103,21 +103,30 @@ public struct Attachment: Identifiable, Sendable {
 
 public struct Message: Identifiable, Sendable {
     public let id: String
+    public var authorID: String?
     public var authorName: String
     public var authorInitial: String
     public var authorAvatarURL: String?
+    /// userID → username, for resolving <@ID> mentions in content
+    public var mentions: [String: String]
+    /// channelID → channelName, for resolving <#ID> mentions in content
+    public var channelMentions: [String: String]
     public var content: String
     public var attachments: [Attachment]
     public var timestamp: Date
     public var isEdited: Bool
 
     public init(id: String, authorName: String, content: String,
-                authorAvatarURL: String? = nil, attachments: [Attachment] = [],
-                timestamp: Date = .now, isEdited: Bool = false) {
+                authorID: String? = nil, authorAvatarURL: String? = nil,
+                mentions: [String: String] = [:], channelMentions: [String: String] = [:],
+                attachments: [Attachment] = [], timestamp: Date = .now, isEdited: Bool = false) {
         self.id = id
+        self.authorID = authorID
         self.authorName = authorName
         self.authorInitial = String(authorName.prefix(1)).uppercased()
         self.authorAvatarURL = authorAvatarURL
+        self.mentions = mentions
+        self.channelMentions = channelMentions
         self.content = content
         self.attachments = attachments
         self.timestamp = timestamp

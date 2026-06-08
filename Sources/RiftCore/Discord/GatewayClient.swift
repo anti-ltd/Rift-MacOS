@@ -205,9 +205,9 @@ final class GatewayClient {
         let id = d["id"] as? String ?? UUID().uuidString
         let author = d["author"] as? [String: Any]
         let authorName = author?["username"] as? String ?? "Unknown"
+        let authorID = author?["id"] as? String
         let authorAvatarURL: String? = {
-            guard let uid = author?["id"] as? String,
-                  let hash = author?["avatar"] as? String else { return nil }
+            guard let uid = authorID, let hash = author?["avatar"] as? String else { return nil }
             return "https://cdn.discordapp.com/avatars/\(uid)/\(hash).png?size=64"
         }()
         let content = d["content"] as? String ?? ""
@@ -216,8 +216,11 @@ final class GatewayClient {
         let ts = (d["timestamp"] as? String)
             .flatMap { ISO8601DateFormatter().date(from: $0) } ?? Date.now
         let attachments = DiscordREST.parseAttachments(d["attachments"])
+        let mentions = DiscordREST.parseMentions(d["mentions"])
+        let channelMentions = DiscordREST.parseChannelMentions(d["mention_channels"])
         return Message(id: id, authorName: authorName, content: content,
-                       authorAvatarURL: authorAvatarURL, attachments: attachments,
-                       timestamp: ts, isEdited: isEdited)
+                       authorID: authorID, authorAvatarURL: authorAvatarURL,
+                       mentions: mentions, channelMentions: channelMentions,
+                       attachments: attachments, timestamp: ts, isEdited: isEdited)
     }
 }

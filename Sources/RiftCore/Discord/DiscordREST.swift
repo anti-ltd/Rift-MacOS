@@ -52,9 +52,9 @@ enum DiscordREST {
         guard let id = d["id"] as? String else { return nil }
         let author = d["author"] as? [String: Any]
         let authorName = author?["username"] as? String ?? "Unknown"
+        let authorID = author?["id"] as? String
         let authorAvatarURL: String? = {
-            guard let uid = author?["id"] as? String,
-                  let hash = author?["avatar"] as? String else { return nil }
+            guard let uid = authorID, let hash = author?["avatar"] as? String else { return nil }
             return "https://cdn.discordapp.com/avatars/\(uid)/\(hash).png?size=64"
         }()
         let content = d["content"] as? String ?? ""
@@ -63,9 +63,28 @@ enum DiscordREST {
         let ts = (d["timestamp"] as? String)
             .flatMap { ISO8601DateFormatter().date(from: $0) } ?? Date.now
         let attachments = parseAttachments(d["attachments"])
+        let mentions = parseMentions(d["mentions"])
+        let channelMentions = parseChannelMentions(d["mention_channels"])
         return Message(id: id, authorName: authorName, content: content,
-                       authorAvatarURL: authorAvatarURL, attachments: attachments,
-                       timestamp: ts, isEdited: isEdited)
+                       authorID: authorID, authorAvatarURL: authorAvatarURL,
+                       mentions: mentions, channelMentions: channelMentions,
+                       attachments: attachments, timestamp: ts, isEdited: isEdited)
+    }
+
+    static func parseMentions(_ raw: Any?) -> [String: String] {
+        guard let arr = raw as? [[String: Any]] else { return [:] }
+        return Dictionary(uniqueKeysWithValues: arr.compactMap { u -> (String, String)? in
+            guard let id = u["id"] as? String, let name = u["username"] as? String else { return nil }
+            return (id, name)
+        })
+    }
+
+    static func parseChannelMentions(_ raw: Any?) -> [String: String] {
+        guard let arr = raw as? [[String: Any]] else { return [:] }
+        return Dictionary(uniqueKeysWithValues: arr.compactMap { c -> (String, String)? in
+            guard let id = c["id"] as? String, let name = c["name"] as? String else { return nil }
+            return (id, name)
+        })
     }
 
     static func parseAttachments(_ raw: Any?) -> [Attachment] {

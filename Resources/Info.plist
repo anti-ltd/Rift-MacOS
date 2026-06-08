@@ -24,9 +24,7 @@
 	<string>public.app-category.socialnetworking</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>26.0</string>
-	<key>LSUIElement</key>
-	<true/>
-	<key>NSHumanReadableCopyright</key>
+<key>NSHumanReadableCopyright</key>
 	<string>© 2026 Anti Limited. Released under the Counter-Limitation License v1.2.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>

@@ -1,5 +1,4 @@
 import SwiftUI
-import AVKit
 import iUX_MacOS
 
 // Root of the Rift chat window. Shows the chat interface when connected,
@@ -17,7 +16,7 @@ public struct MainWindowView: View {
                 NoTokenView()
             }
         }
-        .background(RiftWindowOpenerBridge())
+
     }
 }
 
@@ -35,7 +34,8 @@ struct ChatView: View {
                 .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 280)
         } detail: {
             if let channel = model.selectedChannel {
-                MessagePaneView(channel: channel, session: model.session)
+                MessagePaneView(channel: channel, session: model.session,
+                                guildChannels: model.selectedGuild?.channels ?? [])
                     .navigationTitle("#\(channel.name)")
             } else {
                 ContentUnavailableView(
@@ -162,6 +162,22 @@ private struct GuildSelectorView: View {
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
+                // DMs home button
+                Button { selected = nil } label: {
+                    ZStack {
+                        Circle()
+                            .fill(selected == nil ? Color.accentColor : Color(nsColor: .controlBackgroundColor))
+                            .frame(width: 36, height: 36)
+                        Image(systemName: "bubble.left.and.bubble.right.fill")
+                            .font(.system(size: 14))
+                            .foregroundStyle(selected == nil ? .white : .secondary)
+                    }
+                }
+                .buttonStyle(.plain)
+                .help("Direct Messages")
+
+                Divider().frame(height: 24)
+
                 ForEach(guilds) { guild in
                     GuildIconButton(guild: guild, isSelected: selected?.id == guild.id) {
                         selected = guild
@@ -304,6 +320,7 @@ private struct ChannelRow: View {
 struct MessagePaneView: View {
     let channel: Channel
     @Bindable var session: DiscordSession
+    var guildChannels: [Channel] = []
     @State private var history: [Message] = []
     @State private var draft = ""
     @State private var loadError: String?
@@ -314,6 +331,58 @@ struct MessagePaneView: View {
         let live = session.liveMessages[channel.id] ?? []
         let historyIDs = Set(history.map(\.id))
         return history + live.filter { !historyIDs.contains($0.id) }
+    }
+
+    // Unique users seen in this channel, for @mention autocomplete
+    private var knownUsers: [(id: String, name: String, avatarURL: String?)] {
+        var seen = Set<String>()
+        var users: [(id: String, name: String, avatarURL: String?)] = []
+        for msg in allMessages {
+            guard let id = msg.authorID, !seen.contains(id) else { continue }
+            seen.insert(id)
+            users.append((id: id, name: msg.authorName, avatarURL: msg.authorAvatarURL))
+        }
+        return users.sorted { $0.name.lowercased() < $1.name.lowercased() }
+    }
+
+    // Channel name lookup: guild channels take priority, message's mention_channels as fallback
+    private var guildChannelLookup: [String: String] {
+        Dictionary(uniqueKeysWithValues: guildChannels.filter { !$0.isCategory }.map { ($0.id, $0.name) })
+    }
+
+    private func channelLookup(for message: Message) -> [String: String] {
+        message.channelMentions.merging(guildChannelLookup) { _, guild in guild }
+    }
+
+    // The partial text after the last unspaced @ in the draft
+    private var activeMentionQuery: String? {
+        guard let atIdx = draft.lastIndex(of: "@") else { return nil }
+        let tail = draft[draft.index(after: atIdx)...]
+        guard !tail.contains(" "), !tail.contains("\n") else { return nil }
+        return String(tail)
+    }
+
+    private var mentionSuggestions: [(id: String, name: String, avatarURL: String?)] {
+        guard let query = activeMentionQuery else { return [] }
+        let all = knownUsers
+        if query.isEmpty { return Array(all.prefix(6)) }
+        return all.filter { $0.name.localizedCaseInsensitiveContains(query) }.prefix(6).map { $0 }
+    }
+
+    // The partial text after the last unspaced # in the draft
+    private var activeChannelQuery: String? {
+        guard activeMentionQuery == nil else { return nil } // @ takes priority
+        guard let hashIdx = draft.lastIndex(of: "#") else { return nil }
+        let tail = draft[draft.index(after: hashIdx)...]
+        guard !tail.contains(" "), !tail.contains("\n") else { return nil }
+        return String(tail)
+    }
+
+    private var channelSuggestions: [Channel] {
+        guard let query = activeChannelQuery else { return [] }
+        let textChannels = guildChannels.filter { !$0.isCategory && !$0.isThread }
+        if query.isEmpty { return Array(textChannels.prefix(6)) }
+        return textChannels.filter { $0.name.localizedCaseInsensitiveContains(query) }.prefix(6).map { $0 }
     }
 
     var body: some View {
@@ -331,6 +400,13 @@ struct MessagePaneView: View {
                     .padding(.top, 4)
             }
             Divider()
+            if !mentionSuggestions.isEmpty {
+                mentionAutocomplete
+                Divider()
+            } else if !channelSuggestions.isEmpty {
+                channelAutocomplete
+                Divider()
+            }
             inputBar
         }
         .task(id: channel.id) { await loadMessages() }
@@ -351,7 +427,7 @@ struct MessagePaneView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
                     ForEach(allMessages) { message in
-                        MessageRow(message: message)
+                        MessageRow(message: message, channelLookup: channelLookup(for: message))
                     }
                 }
                 .padding(.horizontal, 16)
@@ -363,6 +439,77 @@ struct MessagePaneView: View {
                 }
             }
         }
+    }
+
+    private var mentionAutocomplete: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(mentionSuggestions, id: \.id) { user in
+                Button { insertMention(user) } label: {
+                    HStack(spacing: 8) {
+                        userAvatar(urlStr: user.avatarURL, initial: String(user.name.prefix(1)).uppercased())
+                            .frame(width: 24, height: 24)
+                        Text(user.name)
+                            .font(.callout)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 5)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    private func userAvatar(urlStr: String?, initial: String) -> some View {
+        ZStack {
+            Circle().fill(Color(nsColor: .controlBackgroundColor))
+            if let urlStr, let url = URL(string: urlStr) {
+                AsyncImage(url: url) { phase in
+                    if case .success(let img) = phase {
+                        img.resizable().scaledToFill().clipShape(Circle())
+                    } else {
+                        Text(initial).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+                    }
+                }
+            } else {
+                Text(initial).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func insertMention(_ user: (id: String, name: String, avatarURL: String?)) {
+        guard let atIdx = draft.lastIndex(of: "@") else { return }
+        draft = String(draft[..<atIdx]) + "<@\(user.id)> "
+    }
+
+    private var channelAutocomplete: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(channelSuggestions) { ch in
+                Button { insertChannel(ch) } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: ch.kind.symbol)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 16)
+                        Text(ch.name).font(.callout)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 5)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func insertChannel(_ channel: Channel) {
+        guard let hashIdx = draft.lastIndex(of: "#") else { return }
+        draft = String(draft[..<hashIdx]) + "<#\(channel.id)> "
     }
 
     private var inputBar: some View {
@@ -418,6 +565,51 @@ struct MessagePaneView: View {
 
 private struct MessageRow: View {
     let message: Message
+    var channelLookup: [String: String] = [:]
+
+    // Resolve <@ID>, <@!ID>, and <#ID> tokens into highlighted spans.
+    static func renderContent(_ content: String, _ mentions: [String: String],
+                              _ channelLookup: [String: String] = [:]) -> AttributedString {
+        var result = AttributedString()
+        var remaining = content[...]
+        while !remaining.isEmpty {
+            // Find the next token — whichever comes first
+            let atRange  = remaining.range(of: "<@")
+            let hashRange = remaining.range(of: "<#")
+            let nextRange: Range<String.SubSequence.Index>?
+            let isChannel: Bool
+            switch (atRange, hashRange) {
+            case (nil, nil):
+                result += AttributedString(String(remaining)); return result
+            case (let a?, nil):
+                nextRange = a; isChannel = false
+            case (nil, let h?):
+                nextRange = h; isChannel = true
+            case (let a?, let h?):
+                if a.lowerBound <= h.lowerBound { nextRange = a; isChannel = false }
+                else                            { nextRange = h; isChannel = true }
+            }
+            guard let tokenRange = nextRange else { break }
+            result += AttributedString(String(remaining[..<tokenRange.lowerBound]))
+            remaining = remaining[tokenRange.upperBound...]
+            if !isChannel && remaining.hasPrefix("!") { remaining = remaining.dropFirst() }
+            if let closeRange = remaining.range(of: ">") {
+                let idStr = String(remaining[..<closeRange.lowerBound])
+                remaining = remaining[closeRange.upperBound...]
+                var span: AttributedString
+                if isChannel {
+                    let name = channelLookup[idStr] ?? idStr
+                    span = AttributedString("#\(name)")
+                } else {
+                    let name = mentions[idStr] ?? idStr
+                    span = AttributedString("@\(name)")
+                }
+                span.foregroundColor = Color.accentColor
+                result += span
+            }
+        }
+        return result
+    }
 
     private static let timeFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -466,7 +658,7 @@ private struct MessageRow: View {
                     }
                 }
                 if !message.content.isEmpty {
-                    Text(message.content)
+                    Text(Self.renderContent(message.content, message.mentions, channelLookup))
                         .font(.body)
                         .textSelection(.enabled)
                 }
@@ -494,7 +686,15 @@ private struct AttachmentView: View {
 
     var body: some View {
         if attachment.isVideo, let url = URL(string: attachment.url) {
-            VideoAttachmentView(url: url)
+            Button {
+                NSWorkspace.shared.open(url)
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "play.rectangle.fill").foregroundStyle(.secondary)
+                    Text(attachment.filename).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+            .buttonStyle(.plain)
         } else if attachment.isImage, let url = URL(string: attachment.url) {
             if attachment.isAnimated {
                 AnimatedImageView(url: url)
@@ -527,19 +727,6 @@ private struct AttachmentView: View {
     }
 }
 
-private struct VideoAttachmentView: View {
-    let url: URL
-    @State private var player: AVPlayer?
-
-    var body: some View {
-        VideoPlayer(player: player)
-            .frame(maxWidth: 400, maxHeight: 300)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .onAppear { player = AVPlayer(url: url) }
-            .onDisappear { player?.pause(); player = nil }
-    }
-}
-
 private struct AnimatedImageView: NSViewRepresentable {
     let url: URL
 
@@ -567,19 +754,6 @@ private struct AnimatedImageView: NSViewRepresentable {
         }
 
         deinit { task?.cancel() }
-    }
-}
-
-// MARK: - Window opener bridge
-
-// Captures SwiftUI's openWindow action at render time so AppKit menu items
-// can open the Rift window. Must live inside the Window scene's view tree
-// (not the popover) so it fires on app launch before the window is closed.
-struct RiftWindowOpenerBridge: View {
-    @Environment(\.openWindow) private var openWindow
-    var body: some View {
-        Color.clear.frame(width: 0, height: 0)
-            .onAppear { RiftWindowOpener.action = openWindow }
     }
 }
 
