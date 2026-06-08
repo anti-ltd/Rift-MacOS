@@ -218,9 +218,11 @@ final class GatewayClient {
         let attachments = DiscordREST.parseAttachments(d["attachments"])
         let mentions = DiscordREST.parseMentions(d["mentions"])
         let channelMentions = DiscordREST.parseChannelMentions(d["mention_channels"])
+        let reactions = DiscordREST.parseReactions(d["reactions"])
         return Message(id: id, authorName: authorName, content: content,
                        authorID: authorID, authorAvatarURL: authorAvatarURL,
                        mentions: mentions, channelMentions: channelMentions,
-                       attachments: attachments, timestamp: ts, isEdited: isEdited)
+                       attachments: attachments, reactions: reactions,
+                       timestamp: ts, isEdited: isEdited)
     }
 }

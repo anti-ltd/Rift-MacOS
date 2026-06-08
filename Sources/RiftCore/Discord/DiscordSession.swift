@@ -21,6 +21,8 @@ public final class DiscordSession {
     public var directMessages: [Channel] = []
     // Live messages per channel, appended on MESSAGE_CREATE gateway events
     public var liveMessages: [String: [Message]] = [:]
+    // Set by RiftModel whenever the user switches channel
+    public var selectedChannelID: String?
 
     private var gateway: GatewayClient?
 
@@ -55,6 +57,28 @@ public final class DiscordSession {
         liveMessages = [:]
     }
 
+    public func clearUnread(channelID: String) {
+        for gi in guilds.indices {
+            if let ci = guilds[gi].channels.firstIndex(where: { $0.id == channelID }) {
+                guilds[gi].channels[ci].unreadCount = 0; return
+            }
+        }
+        if let di = directMessages.firstIndex(where: { $0.id == channelID }) {
+            directMessages[di].unreadCount = 0
+        }
+    }
+
+    private func incrementUnread(channelID: String) {
+        for gi in guilds.indices {
+            if let ci = guilds[gi].channels.firstIndex(where: { $0.id == channelID }) {
+                guilds[gi].channels[ci].unreadCount += 1; return
+            }
+        }
+        if let di = directMessages.firstIndex(where: { $0.id == channelID }) {
+            directMessages[di].unreadCount += 1
+        }
+    }
+
     private func handle(_ event: GatewayEvent) {
         switch event {
         case .ready(let username, let initial, let dms):
@@ -68,6 +92,9 @@ public final class DiscordSession {
             }
         case .messageCreate(let channelID, let message):
             liveMessages[channelID, default: []].append(message)
+            if channelID != selectedChannelID {
+                incrementUnread(channelID: channelID)
+            }
         case .error(let msg):
             state = .error(msg)
         case .disconnected:

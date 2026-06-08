@@ -5,7 +5,12 @@ import SwiftUI
 public final class RiftModel {
     public var session = DiscordSession()
     public var selectedGuild: Guild?
-    public var selectedChannel: Channel?
+    public var selectedChannel: Channel? {
+        didSet {
+            session.selectedChannelID = selectedChannel?.id
+            if let id = selectedChannel?.id { session.clearUnread(channelID: id) }
+        }
+    }
 
     public init() {}
 

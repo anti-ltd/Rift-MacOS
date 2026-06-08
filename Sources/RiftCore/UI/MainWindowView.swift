@@ -108,8 +108,19 @@ private struct SidebarColumn: View {
         List(selection: $model.selectedChannel) {
             Section("Direct Messages") {
                 ForEach(model.session.directMessages) { dm in
-                    Label(dm.name, systemImage: "bubble.left")
-                        .tag(dm)
+                    HStack {
+                        Label(dm.name, systemImage: "bubble.left")
+                        Spacer()
+                        if dm.unreadCount > 0 {
+                            Text("\(dm.unreadCount)")
+                                .font(.caption2.weight(.semibold))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.accentColor, in: Capsule())
+                                .foregroundStyle(.white)
+                        }
+                    }
+                    .tag(dm)
                 }
             }
         }
@@ -155,9 +166,7 @@ private struct SidebarColumn: View {
     private var connectionIndicator: some View {
         switch model.session.state {
         case .connected:
-            Image(systemName: "checkmark.circle.fill")
-                .foregroundStyle(.green)
-                .help("Connected")
+            EmptyView()
         case .connecting:
             ProgressView().scaleEffect(0.7)
                 .help("Connecting…")
@@ -459,7 +468,10 @@ struct MessagePaneView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
                     ForEach(allMessages) { message in
-                        MessageRow(message: message, channelLookup: channelLookup(for: message))
+                        MessageRow(message: message,
+                                   channelLookup: channelLookup(for: message),
+                                   channelID: channel.id,
+                                   token: session.token)
                     }
                 }
                 .padding(.horizontal, 16)
@@ -684,6 +696,21 @@ struct MessagePaneView: View {
 private struct MessageRow: View {
     let message: Message
     var channelLookup: [String: String] = [:]
+    var channelID: String = ""
+    var token: String = ""
+
+    @State private var reactions: [Reaction]
+    @State private var isHovered = false
+    @State private var showEmojiPicker = false
+
+    init(message: Message, channelLookup: [String: String] = [:],
+         channelID: String = "", token: String = "") {
+        self.message = message
+        self.channelLookup = channelLookup
+        self.channelID = channelID
+        self.token = token
+        _reactions = State(initialValue: message.reactions)
+    }
 
     // Resolve <@ID>, <@!ID>, and <#ID> tokens into highlighted spans.
     static func renderContent(_ content: String, _ mentions: [String: String],
@@ -788,12 +815,164 @@ private struct MessageRow: View {
                     }
                     .padding(.top, message.content.isEmpty ? 0 : 2)
                 }
+                if !reactions.isEmpty || isHovered {
+                    reactionBar
+                        .padding(.top, 2)
+                }
             }
 
             Spacer(minLength: 0)
+
+            // Hover reaction button (top-right of row)
+            if isHovered {
+                Button { showEmojiPicker = true } label: {
+                    Image(systemName: "face.smiling")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(5)
+                        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+                }
+                .buttonStyle(.plain)
+                .popover(isPresented: $showEmojiPicker, arrowEdge: .top) {
+                    EmojiPickerView { emoji in
+                        showEmojiPicker = false
+                        Task { await addNewReaction(emoji) }
+                    }
+                }
+            }
         }
         .padding(.vertical, 3)
         .id(message.id)
+        .onHover { isHovered = $0 }
+    }
+
+    private var reactionBar: some View {
+        HStack(spacing: 4) {
+            ForEach(reactions) { reaction in
+                ReactionPill(reaction: reaction) {
+                    Task { await toggleReaction(reaction) }
+                }
+            }
+            if !reactions.isEmpty {
+                Button { showEmojiPicker = true } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 26, height: 22)
+                        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 11))
+                }
+                .buttonStyle(.plain)
+                .popover(isPresented: $showEmojiPicker, arrowEdge: .top) {
+                    EmojiPickerView { emoji in
+                        showEmojiPicker = false
+                        Task { await addNewReaction(emoji) }
+                    }
+                }
+            }
+        }
+    }
+
+    private func toggleReaction(_ reaction: Reaction) async {
+        guard !channelID.isEmpty, !token.isEmpty else { return }
+        let wasMe = reaction.me
+        // Optimistic update
+        if let idx = reactions.firstIndex(where: { $0.id == reaction.id }) {
+            if wasMe {
+                reactions[idx].count -= 1
+                reactions[idx].me = false
+                if reactions[idx].count <= 0 { reactions.remove(at: idx) }
+            } else {
+                reactions[idx].count += 1
+                reactions[idx].me = true
+            }
+        }
+        do {
+            if wasMe {
+                try await DiscordREST.removeReaction(channelID: channelID, messageID: message.id,
+                                                     emoji: reaction.apiParam, token: token)
+            } else {
+                try await DiscordREST.addReaction(channelID: channelID, messageID: message.id,
+                                                  emoji: reaction.apiParam, token: token)
+            }
+        } catch {
+            reactions = message.reactions // revert on failure
+        }
+    }
+
+    private func addNewReaction(_ emoji: String) async {
+        guard !channelID.isEmpty, !token.isEmpty else { return }
+        if let idx = reactions.firstIndex(where: { $0.emojiName == emoji }) {
+            if !reactions[idx].me { await toggleReaction(reactions[idx]) }
+            return
+        }
+        reactions.append(Reaction(emojiName: emoji, count: 1, me: true))
+        do {
+            try await DiscordREST.addReaction(channelID: channelID, messageID: message.id,
+                                              emoji: emoji, token: token)
+        } catch {
+            reactions = message.reactions
+        }
+    }
+}
+
+// MARK: - Reaction views
+
+private struct ReactionPill: View {
+    let reaction: Reaction
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 4) {
+                Text(reaction.display)
+                    .font(.system(size: 14))
+                Text("\(reaction.count)")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(reaction.me ? Color.accentColor : .primary)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(
+                reaction.me
+                    ? Color.accentColor.opacity(0.15)
+                    : Color(nsColor: .controlBackgroundColor),
+                in: RoundedRectangle(cornerRadius: 11)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 11)
+                    .stroke(reaction.me ? Color.accentColor.opacity(0.6) : Color.clear, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct EmojiPickerView: View {
+    let onSelect: (String) -> Void
+
+    private let emojis: [String] = [
+        "👍","👎","❤️","😂","😮","😢","🎉","🔥",
+        "✅","❌","🙏","👀","💯","🤔","😎","🚀",
+        "⭐","💪","🤣","😍","🥺","💀","🤯","🤝",
+        "😊","🙌","👏","💥","⚡","🌟","🎯","💎",
+    ]
+    private let columns = Array(repeating: GridItem(.fixed(38)), count: 8)
+
+    var body: some View {
+        LazyVGrid(columns: columns, spacing: 2) {
+            ForEach(emojis, id: \.self) { emoji in
+                Button {
+                    onSelect(emoji)
+                } label: {
+                    Text(emoji)
+                        .font(.system(size: 22))
+                        .frame(width: 36, height: 36)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(8)
+        .frame(width: 324)
     }
 }
 

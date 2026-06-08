@@ -97,10 +97,49 @@ enum DiscordREST {
         let attachments = parseAttachments(d["attachments"])
         let mentions = parseMentions(d["mentions"])
         let channelMentions = parseChannelMentions(d["mention_channels"])
+        let reactions = parseReactions(d["reactions"])
         return Message(id: id, authorName: authorName, content: content,
                        authorID: authorID, authorAvatarURL: authorAvatarURL,
                        mentions: mentions, channelMentions: channelMentions,
-                       attachments: attachments, timestamp: ts, isEdited: isEdited)
+                       attachments: attachments, reactions: reactions,
+                       timestamp: ts, isEdited: isEdited)
+    }
+
+    // MARK: - Reactions
+
+    static func addReaction(channelID: String, messageID: String, emoji: String, token: String) async throws {
+        let encoded = emoji.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? emoji
+        let url = base.appendingPathComponent("channels/\(channelID)/messages/\(messageID)/reactions/\(encoded)/@me")
+        var req = URLRequest(url: url)
+        req.httpMethod = "PUT"
+        req.setValue(token, forHTTPHeaderField: "Authorization")
+        req.setValue("0", forHTTPHeaderField: "Content-Length")
+        let (_, response) = try await URLSession.shared.data(for: req)
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(code) else { throw RiftError.httpError(code) }
+    }
+
+    static func removeReaction(channelID: String, messageID: String, emoji: String, token: String) async throws {
+        let encoded = emoji.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? emoji
+        let url = base.appendingPathComponent("channels/\(channelID)/messages/\(messageID)/reactions/\(encoded)/@me")
+        var req = URLRequest(url: url)
+        req.httpMethod = "DELETE"
+        req.setValue(token, forHTTPHeaderField: "Authorization")
+        let (_, response) = try await URLSession.shared.data(for: req)
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(code) else { throw RiftError.httpError(code) }
+    }
+
+    static func parseReactions(_ raw: Any?) -> [Reaction] {
+        guard let arr = raw as? [[String: Any]] else { return [] }
+        return arr.compactMap { r in
+            guard let emoji = r["emoji"] as? [String: Any],
+                  let name = emoji["name"] as? String else { return nil }
+            let emojiID = emoji["id"] as? String
+            let count = r["count"] as? Int ?? 0
+            let me = r["me"] as? Bool ?? false
+            return Reaction(emojiName: name, emojiID: emojiID, count: count, me: me)
+        }
     }
 
     static func parseMentions(_ raw: Any?) -> [String: String] {

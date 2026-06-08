@@ -59,6 +59,29 @@ public struct Channel: Identifiable, Hashable, Sendable {
     }
 }
 
+public struct Reaction: Identifiable, Hashable, Sendable {
+    public let emojiName: String   // unicode char OR custom name
+    public let emojiID: String?    // nil for standard unicode emoji
+    public var count: Int
+    public var me: Bool            // current user has reacted
+
+    public init(emojiName: String, emojiID: String? = nil, count: Int = 0, me: Bool = false) {
+        self.emojiName = emojiName
+        self.emojiID = emojiID
+        self.count = count
+        self.me = me
+    }
+
+    /// Identifiable key
+    public var id: String { emojiID.map { "\(emojiName):\($0)" } ?? emojiName }
+
+    /// What to show in the UI (unicode char, or :name: for custom)
+    public var display: String { emojiID == nil ? emojiName : ":\(emojiName):" }
+
+    /// URL path segment for the Discord REST API
+    public var apiParam: String { emojiID.map { "\(emojiName):\($0)" } ?? emojiName }
+}
+
 public struct Attachment: Identifiable, Sendable {
     public let id: String
     public let url: String
@@ -113,13 +136,15 @@ public struct Message: Identifiable, Sendable {
     public var channelMentions: [String: String]
     public var content: String
     public var attachments: [Attachment]
+    public var reactions: [Reaction]
     public var timestamp: Date
     public var isEdited: Bool
 
     public init(id: String, authorName: String, content: String,
                 authorID: String? = nil, authorAvatarURL: String? = nil,
                 mentions: [String: String] = [:], channelMentions: [String: String] = [:],
-                attachments: [Attachment] = [], timestamp: Date = .now, isEdited: Bool = false) {
+                attachments: [Attachment] = [], reactions: [Reaction] = [],
+                timestamp: Date = .now, isEdited: Bool = false) {
         self.id = id
         self.authorID = authorID
         self.authorName = authorName
@@ -129,6 +154,7 @@ public struct Message: Identifiable, Sendable {
         self.channelMentions = channelMentions
         self.content = content
         self.attachments = attachments
+        self.reactions = reactions
         self.timestamp = timestamp
         self.isEdited = isEdited
     }
