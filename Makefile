@@ -63,6 +63,7 @@ app: icon
 	@echo "Built $(BUNDLE) (signed: $(SIGN_ID))"
 
 run: app
+	-pkill -x $(APP_NAME)
 	open $(BUNDLE)
 
 dmg: app

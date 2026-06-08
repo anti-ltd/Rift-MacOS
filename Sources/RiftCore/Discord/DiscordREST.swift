@@ -52,11 +52,33 @@ enum DiscordREST {
         guard let id = d["id"] as? String else { return nil }
         let author = d["author"] as? [String: Any]
         let authorName = author?["username"] as? String ?? "Unknown"
+        let authorAvatarURL: String? = {
+            guard let uid = author?["id"] as? String,
+                  let hash = author?["avatar"] as? String else { return nil }
+            return "https://cdn.discordapp.com/avatars/\(uid)/\(hash).png?size=64"
+        }()
         let content = d["content"] as? String ?? ""
         let isEdited: Bool
         if let et = d["edited_timestamp"] { isEdited = !(et is NSNull) } else { isEdited = false }
         let ts = (d["timestamp"] as? String)
             .flatMap { ISO8601DateFormatter().date(from: $0) } ?? Date.now
-        return Message(id: id, authorName: authorName, content: content, timestamp: ts, isEdited: isEdited)
+        let attachments = parseAttachments(d["attachments"])
+        return Message(id: id, authorName: authorName, content: content,
+                       authorAvatarURL: authorAvatarURL, attachments: attachments,
+                       timestamp: ts, isEdited: isEdited)
+    }
+
+    static func parseAttachments(_ raw: Any?) -> [Attachment] {
+        guard let arr = raw as? [[String: Any]] else { return [] }
+        return arr.compactMap { a in
+            guard let aid = a["id"] as? String, let url = a["url"] as? String else { return nil }
+            return Attachment(
+                id: aid, url: url,
+                filename: a["filename"] as? String ?? "",
+                contentType: a["content_type"] as? String,
+                width: a["width"] as? Int,
+                height: a["height"] as? Int
+            )
+        }
     }
 }

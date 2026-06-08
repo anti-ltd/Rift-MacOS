@@ -59,20 +59,67 @@ public struct Channel: Identifiable, Hashable, Sendable {
     }
 }
 
+public struct Attachment: Identifiable, Sendable {
+    public let id: String
+    public let url: String
+    public let filename: String
+    public let contentType: String?
+    public let width: Int?
+    public let height: Int?
+
+    public init(id: String, url: String, filename: String,
+                contentType: String? = nil, width: Int? = nil, height: Int? = nil) {
+        self.id = id
+        self.url = url
+        self.filename = filename
+        self.contentType = contentType
+        self.width = width
+        self.height = height
+    }
+
+    public var isImage: Bool {
+        if let ct = contentType { return ct.hasPrefix("image/") }
+        return ["png", "jpg", "jpeg", "gif", "webp"].contains(fileExtension)
+    }
+
+    public var isVideo: Bool {
+        if let ct = contentType { return ct.hasPrefix("video/") }
+        return ["mp4", "mov", "webm"].contains(fileExtension)
+    }
+
+    public var isAnimated: Bool {
+        contentType == "image/gif" || fileExtension == "gif"
+    }
+
+    private var fileExtension: String {
+        String(url.split(separator: "?").first ?? "")
+            .split(separator: "/").last
+            .map(String.init)?
+            .split(separator: ".")
+            .last
+            .map { String($0).lowercased() } ?? ""
+    }
+}
+
 public struct Message: Identifiable, Sendable {
     public let id: String
     public var authorName: String
     public var authorInitial: String
+    public var authorAvatarURL: String?
     public var content: String
+    public var attachments: [Attachment]
     public var timestamp: Date
     public var isEdited: Bool
 
     public init(id: String, authorName: String, content: String,
+                authorAvatarURL: String? = nil, attachments: [Attachment] = [],
                 timestamp: Date = .now, isEdited: Bool = false) {
         self.id = id
         self.authorName = authorName
         self.authorInitial = String(authorName.prefix(1)).uppercased()
+        self.authorAvatarURL = authorAvatarURL
         self.content = content
+        self.attachments = attachments
         self.timestamp = timestamp
         self.isEdited = isEdited
     }

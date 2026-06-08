@@ -1,4 +1,5 @@
 import SwiftUI
+import AVKit
 import iUX_MacOS
 
 // Root of the Rift chat window. Shows the chat interface when connected,
@@ -182,9 +183,23 @@ private struct GuildIconButton: View {
                 Circle()
                     .fill(isSelected ? Color.accentColor : Color(nsColor: .controlBackgroundColor))
                     .frame(width: 36, height: 36)
-                Text(guild.initial)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(isSelected ? .white : .primary)
+                if let urlStr = guild.iconURL, let url = URL(string: urlStr) {
+                    AsyncImage(url: url) { phase in
+                        if case .success(let image) = phase {
+                            image.resizable().scaledToFill()
+                                .frame(width: 36, height: 36)
+                                .clipShape(Circle())
+                        } else {
+                            Text(guild.initial)
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(isSelected ? .white : .primary)
+                        }
+                    }
+                } else {
+                    Text(guild.initial)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(isSelected ? .white : .primary)
+                }
             }
         }
         .buttonStyle(.plain)
@@ -418,9 +433,23 @@ private struct MessageRow: View {
                 Circle()
                     .fill(Color(nsColor: .controlBackgroundColor))
                     .frame(width: 36, height: 36)
-                Text(message.authorInitial)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                if let urlStr = message.authorAvatarURL, let url = URL(string: urlStr) {
+                    AsyncImage(url: url) { phase in
+                        if case .success(let image) = phase {
+                            image.resizable().scaledToFill()
+                                .frame(width: 36, height: 36)
+                                .clipShape(Circle())
+                        } else {
+                            Text(message.authorInitial)
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } else {
+                    Text(message.authorInitial)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
             }
 
             VStack(alignment: .leading, spacing: 2) {
@@ -436,15 +465,108 @@ private struct MessageRow: View {
                             .foregroundStyle(.tertiary)
                     }
                 }
-                Text(message.content)
-                    .font(.body)
-                    .textSelection(.enabled)
+                if !message.content.isEmpty {
+                    Text(message.content)
+                        .font(.body)
+                        .textSelection(.enabled)
+                }
+                if !message.attachments.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(message.attachments) { attachment in
+                            AttachmentView(attachment: attachment)
+                        }
+                    }
+                    .padding(.top, message.content.isEmpty ? 0 : 2)
+                }
             }
 
             Spacer(minLength: 0)
         }
         .padding(.vertical, 3)
         .id(message.id)
+    }
+}
+
+// MARK: - Attachment views
+
+private struct AttachmentView: View {
+    let attachment: Attachment
+
+    var body: some View {
+        if attachment.isVideo, let url = URL(string: attachment.url) {
+            VideoAttachmentView(url: url)
+        } else if attachment.isImage, let url = URL(string: attachment.url) {
+            if attachment.isAnimated {
+                AnimatedImageView(url: url)
+                    .frame(maxWidth: 400, maxHeight: 300)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+            } else {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image.resizable().scaledToFit()
+                            .frame(maxWidth: 400, maxHeight: 300)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                    case .failure:
+                        Label("Failed to load image", systemImage: "photo.badge.exclamationmark")
+                            .foregroundStyle(.secondary)
+                    default:
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color(nsColor: .controlBackgroundColor))
+                            .frame(width: 200, height: 150)
+                            .overlay(ProgressView())
+                    }
+                }
+            }
+        } else {
+            HStack(spacing: 6) {
+                Image(systemName: "doc.fill").foregroundStyle(.secondary)
+                Text(attachment.filename).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+            }
+        }
+    }
+}
+
+private struct VideoAttachmentView: View {
+    let url: URL
+    @State private var player: AVPlayer?
+
+    var body: some View {
+        VideoPlayer(player: player)
+            .frame(maxWidth: 400, maxHeight: 300)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .onAppear { player = AVPlayer(url: url) }
+            .onDisappear { player?.pause(); player = nil }
+    }
+}
+
+private struct AnimatedImageView: NSViewRepresentable {
+    let url: URL
+
+    func makeNSView(context: Context) -> NSImageView {
+        let view = NSImageView()
+        view.imageScaling = .scaleProportionallyUpOrDown
+        view.animates = true
+        context.coordinator.load(url: url, into: view)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSImageView, context: Context) {}
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    final class Coordinator: @unchecked Sendable {
+        private var task: Task<Void, Never>?
+
+        func load(url: URL, into imageView: NSImageView) {
+            task?.cancel()
+            task = Task {
+                guard let (data, _) = try? await URLSession.shared.data(from: url),
+                      !Task.isCancelled else { return }
+                await MainActor.run { imageView.image = NSImage(data: data) }
+            }
+        }
+
+        deinit { task?.cancel() }
     }
 }
 
