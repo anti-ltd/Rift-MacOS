@@ -1,5 +1,25 @@
 import SwiftUI
+import AVKit
+import UniformTypeIdentifiers
 import iUX_MacOS
+
+// MARK: - Pending attachment (pre-send file)
+
+struct PendingAttachment: Identifiable, Sendable {
+    let id: UUID
+    let filename: String
+    let data: Data
+    let mimeType: String
+
+    init(filename: String, data: Data, mimeType: String) {
+        self.id = UUID()
+        self.filename = filename
+        self.data = data
+        self.mimeType = mimeType
+    }
+
+    var isImage: Bool { mimeType.hasPrefix("image/") }
+}
 
 // Root of the Rift chat window. Shows the chat interface when connected,
 // or a login prompt when no session token is configured.
@@ -323,6 +343,7 @@ struct MessagePaneView: View {
     var guildChannels: [Channel] = []
     @State private var history: [Message] = []
     @State private var draft = ""
+    @State private var pendingFiles: [PendingAttachment] = []
     @State private var loadError: String?
     @State private var sending = false
 
@@ -387,6 +408,13 @@ struct MessagePaneView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // Hidden Cmd+V interceptor: grabs image data from the clipboard;
+            // falls back to normal paste for plain text.
+            Button("") { handlePaste() }
+                .keyboardShortcut("v", modifiers: .command)
+                .frame(width: 0, height: 0)
+                .opacity(0)
+
             if allMessages.isEmpty {
                 emptyChannelView
             } else {
@@ -405,6 +433,10 @@ struct MessagePaneView: View {
                 Divider()
             } else if !channelSuggestions.isEmpty {
                 channelAutocomplete
+                Divider()
+            }
+            if !pendingFiles.isEmpty {
+                attachmentStrip
                 Divider()
             }
             inputBar
@@ -512,8 +544,88 @@ struct MessagePaneView: View {
         draft = String(draft[..<hashIdx]) + "<#\(channel.id)> "
     }
 
+    private var attachmentStrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(pendingFiles) { file in
+                    ZStack(alignment: .topTrailing) {
+                        if file.isImage, let img = NSImage(data: file.data) {
+                            Image(nsImage: img)
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: 64, height: 64)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                        } else {
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(Color(nsColor: .controlBackgroundColor))
+                                .frame(width: 64, height: 64)
+                                .overlay(
+                                    VStack(spacing: 4) {
+                                        Image(systemName: "doc.fill").foregroundStyle(.secondary)
+                                        Text(file.filename)
+                                            .font(.system(size: 8))
+                                            .lineLimit(2)
+                                            .foregroundStyle(.secondary)
+                                            .multilineTextAlignment(.center)
+                                    }
+                                    .padding(4)
+                                )
+                        }
+                        Button { pendingFiles.removeAll { $0.id == file.id } } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .symbolRenderingMode(.palette)
+                                .foregroundStyle(.white, Color.black.opacity(0.55))
+                                .font(.system(size: 16))
+                        }
+                        .buttonStyle(.plain)
+                        .offset(x: 6, y: -6)
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+        }
+    }
+
+    private func handlePaste() {
+        let pb = NSPasteboard.general
+        if let data = pb.data(forType: .png) {
+            pendingFiles.append(PendingAttachment(filename: "pasted-image.png", data: data, mimeType: "image/png"))
+        } else if let tiff = pb.data(forType: .tiff),
+                  let bitmap = NSBitmapImageRep(data: tiff),
+                  let png = bitmap.representation(using: .png, properties: [:]) {
+            pendingFiles.append(PendingAttachment(filename: "pasted-image.png", data: png, mimeType: "image/png"))
+        } else {
+            NSApp.sendAction(#selector(NSText.paste(_:)), to: nil, from: nil)
+        }
+    }
+
+    private func pickFiles() {
+        Task { @MainActor in
+            let panel = NSOpenPanel()
+            panel.allowsMultipleSelection = true
+            panel.canChooseDirectories = false
+            panel.allowedContentTypes = [.image, .movie, .audio, .pdf, .data]
+            guard panel.runModal() == .OK else { return }
+            for url in panel.urls {
+                guard let data = try? Data(contentsOf: url) else { continue }
+                let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
+                            ?? "application/octet-stream"
+                pendingFiles.append(PendingAttachment(filename: url.lastPathComponent, data: data, mimeType: mime))
+            }
+        }
+    }
+
     private var inputBar: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
+            Button { pickFiles() } label: {
+                Image(systemName: "paperclip")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Attach file")
+
             TextField("Message #\(channel.name)", text: $draft, axis: .vertical)
                 .textFieldStyle(.plain)
                 .lineLimit(1...6)
@@ -523,7 +635,8 @@ struct MessagePaneView: View {
                 .onSubmit { Task { await sendMessage() } }
                 .disabled(sending)
 
-            if !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let canSend = !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pendingFiles.isEmpty
+            if canSend {
                 Button { Task { await sendMessage() } } label: {
                     Image(systemName: sending ? "ellipsis.circle" : "arrow.up.circle.fill")
                         .font(.title2)
@@ -550,14 +663,19 @@ struct MessagePaneView: View {
 
     private func sendMessage() async {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        guard !text.isEmpty || !pendingFiles.isEmpty else { return }
+        let filesToSend = pendingFiles
         draft = ""
+        pendingFiles = []
         sending = true
         defer { sending = false }
         do {
-            try await DiscordREST.sendMessage(channelID: channel.id, content: text, token: session.token)
+            let files = filesToSend.map { ($0.filename, $0.data, $0.mimeType) }
+            try await DiscordREST.sendMessage(channelID: channel.id, content: text,
+                                              token: session.token, files: files)
         } catch {
-            draft = text // restore on failure
+            draft = text
+            pendingFiles = filesToSend
             loadError = "Send failed: \(error.localizedDescription)"
         }
     }
@@ -686,15 +804,7 @@ private struct AttachmentView: View {
 
     var body: some View {
         if attachment.isVideo, let url = URL(string: attachment.url) {
-            Button {
-                NSWorkspace.shared.open(url)
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "play.rectangle.fill").foregroundStyle(.secondary)
-                    Text(attachment.filename).font(.callout).foregroundStyle(.secondary).lineLimit(1)
-                }
-            }
-            .buttonStyle(.plain)
+            VideoPlayerView(url: url, width: attachment.width, height: attachment.height)
         } else if attachment.isImage, let url = URL(string: attachment.url) {
             if attachment.isAnimated {
                 AnimatedImageView(url: url)
@@ -724,6 +834,42 @@ private struct AttachmentView: View {
                 Text(attachment.filename).font(.callout).foregroundStyle(.secondary).lineLimit(1)
             }
         }
+    }
+}
+
+// Uses AVPlayerView (AppKit) rather than SwiftUI's VideoPlayer to avoid
+// the _AVKit_SwiftUI metadata crash on macOS 26.
+private struct VideoPlayerView: NSViewRepresentable {
+    let url: URL
+    let width: Int?
+    let height: Int?
+
+    private var displaySize: CGSize {
+        let maxW: CGFloat = 400
+        let maxH: CGFloat = 280
+        if let w = width, let h = height, w > 0, h > 0 {
+            let scale = min(maxW / CGFloat(w), maxH / CGFloat(h), 1)
+            return CGSize(width: CGFloat(w) * scale, height: CGFloat(h) * scale)
+        }
+        return CGSize(width: maxW, height: 225) // default 16:9
+    }
+
+    func makeNSView(context: Context) -> AVPlayerView {
+        let view = AVPlayerView()
+        view.player = AVPlayer(url: url)
+        view.controlsStyle = .inline
+        return view
+    }
+
+    func updateNSView(_ nsView: AVPlayerView, context: Context) {}
+
+    static func dismantleNSView(_ nsView: AVPlayerView, coordinator: ()) {
+        nsView.player?.pause()
+        nsView.player = nil
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: AVPlayerView, context: Context) -> CGSize? {
+        displaySize
     }
 }
 

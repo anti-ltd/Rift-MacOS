@@ -33,17 +33,49 @@ enum DiscordREST {
         return raw.compactMap(parseMessage).reversed()
     }
 
-    static func sendMessage(channelID: String, content: String, token: String) async throws {
+    static func sendMessage(channelID: String, content: String, token: String,
+                            files: [(filename: String, data: Data, mimeType: String)] = []) async throws {
         let url = base.appendingPathComponent("channels/\(channelID)/messages")
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue(token, forHTTPHeaderField: "Authorization")
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try? JSONSerialization.data(withJSONObject: ["content": content])
+
+        if files.isEmpty {
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try? JSONSerialization.data(withJSONObject: ["content": content])
+        } else {
+            let boundary = "RiftBoundary\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
+            req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+            req.httpBody = buildMultipart(boundary: boundary, content: content, files: files)
+        }
 
         let (_, response) = try await URLSession.shared.data(for: req)
         let code = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(code) else { throw RiftError.httpError(code) }
+    }
+
+    private static func buildMultipart(boundary: String, content: String,
+                                       files: [(filename: String, data: Data, mimeType: String)]) -> Data {
+        var body = Data()
+        func str(_ s: String) { body.append(Data(s.utf8)) }
+        let nl = "\r\n"
+
+        str("--\(boundary)\(nl)")
+        str("Content-Disposition: form-data; name=\"payload_json\"\(nl)")
+        str("Content-Type: application/json\(nl)\(nl)")
+        if let json = try? JSONSerialization.data(withJSONObject: ["content": content]) { body.append(json) }
+        str(nl)
+
+        for (i, file) in files.enumerated() {
+            str("--\(boundary)\(nl)")
+            str("Content-Disposition: form-data; name=\"files[\(i)]\"; filename=\"\(file.filename)\"\(nl)")
+            str("Content-Type: \(file.mimeType)\(nl)\(nl)")
+            body.append(file.data)
+            str(nl)
+        }
+
+        str("--\(boundary)--\(nl)")
+        return body
     }
 
     // MARK: - Parser
